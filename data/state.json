@@ -1,0 +1,23 @@
+{
+  "settings": {
+    "salon": "BrainWash Castricum",
+    "bookingUrl": "https://www.brainwash-kappers.nl/afspraak-maken/brainwash-castricum",
+    "treatment": "Mannen - wassen en knippen",
+    "stylist": "No preference",
+    "weekdayAfter": "17:00",
+    "saturdayAny": true,
+    "cadence": "monthly",
+    "bookingMode": "approval",
+    "horizonDays": 45
+  },
+  "profile": {
+    "firstName": "",
+    "lastName": "",
+    "email": "",
+    "phone": ""
+  },
+  "candidates": [],
+  "bookings": [],
+  "lastCheck": null,
+  "lastDiagnostic": null
+}

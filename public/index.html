@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BrainWash Castricum Booker</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#171717;background:#f5f5f4}*{box-sizing:border-box}body{margin:0}.wrap{max-width:1040px;margin:auto;padding:24px}.top{display:flex;gap:16px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}.badge{padding:7px 10px;border-radius:999px;background:#fff;border:1px solid #ddd;font-size:13px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:18px}.card{background:#fff;border:1px solid #ddd;border-radius:16px;padding:18px}.wide{grid-column:1/-1}.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.label{font-size:12px;color:#737373;text-transform:uppercase;letter-spacing:.05em}.value{font-weight:700;margin-top:5px}.muted{color:#666;font-size:14px}.row{display:grid;grid-template-columns:160px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid #eee}.row:last-child{border-bottom:0}input,select,button{font:inherit;border-radius:10px;border:1px solid #ccc;padding:11px 12px;width:100%}button{cursor:pointer;background:#171717;color:#fff;font-weight:700}.secondary{background:#fff;color:#171717}.danger{background:#fff;color:#a00;border-color:#d7aaaa}.actions{display:flex;gap:10px;flex-wrap:wrap}.actions button{width:auto}.status{padding:12px;border-radius:10px;background:#f1f1ef;margin-top:12px;white-space:pre-wrap}.candidate{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #eee}.candidate:last-child{border-bottom:0}.candidate button{width:auto}.diag{max-height:260px;overflow:auto;background:#111;color:#eee;padding:12px;border-radius:10px;font:12px/1.45 ui-monospace,monospace;white-space:pre-wrap}.ok{color:#0a6}.warn{color:#a65b00}@media(max-width:760px){.grid,.two{grid-template-columns:1fr}.row{grid-template-columns:1fr}.wrap{padding:16px}.candidate{align-items:flex-start;flex-direction:column}.candidate button{width:100%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div><h1 style="margin:0">BrainWash Castricum Booker</h1><div class="muted">Live availability checker + approval-based booking</div></div>
+    <div id="runtime" class="badge">Loading…</div>
+  </div>
+
+  <div class="grid">
+    <section class="card"><div class="label">Salon</div><div class="value">BrainWash Castricum</div><div class="muted">Geesterduin 35</div></section>
+    <section class="card"><div class="label">Treatment</div><div class="value">Mannen – wassen en knippen</div><div class="muted">Any stylist</div></section>
+    <section class="card"><div class="label">Preferred times</div><div class="value">Tue–Fri ≥17:00</div><div class="muted">Saturday anytime</div></section>
+
+    <section class="card wide">
+      <div class="top"><div><div class="label">Live availability</div><h2 style="margin:5px 0 0">Matching appointments</h2></div><div class="actions"><button id="check">Check live availability</button></div></div>
+      <div id="checkStatus" class="status">No live check has been run in this browser yet.</div>
+      <div id="candidates" style="margin-top:8px"></div>
+    </section>
+
+    <section class="card wide two">
+      <div>
+        <div class="label">Schedule</div><h2>Automation</h2>
+        <label>Cadence<select id="cadence"><option value="monthly">Once every month</option><option value="fourWeeks">Every 4 weeks</option></select></label><br><br>
+        <label>Booking mode<select id="mode"><option value="approval">Ask me to approve</option><option value="auto">Automatically book earliest match</option></select></label><br><br>
+        <label>Weekday earliest time<input id="weekdayAfter" type="time" value="17:00"></label><br><br>
+        <button id="saveSettings">Save automation settings</button>
+        <div id="settingsStatus" class="status">Monthly, approval mode.</div>
+      </div>
+      <div>
+        <div class="label">Required for booking</div><h2>Your contact details</h2>
+        <div class="two"><label>First name<input id="firstName" autocomplete="given-name"></label><label>Last name<input id="lastName" autocomplete="family-name"></label></div><br>
+        <label>Email<input id="email" type="email" autocomplete="email"></label><br><br>
+        <label>Phone<input id="phone" type="tel" autocomplete="tel"></label><br><br>
+        <button id="saveProfile">Save contact details</button>
+        <div id="profileStatus" class="status">Stored only in this app's data volume.</div>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <div class="label">Connector diagnostics</div><h2>Last Aimy result</h2>
+      <div class="muted">If Aimy changes its UI, this helps adjust the connector without guessing.</div>
+      <pre id="diagnostic" class="diag">No diagnostic yet.</pre>
+    </section>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+let state=null;
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function jsonFetch(url,opts={}){const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opts});const data=await r.json();if(!r.ok)throw Object.assign(new Error(data.error||data.message||'Request failed'),{data});return data}
+function renderCandidates(items=[]){
+  $('candidates').innerHTML=items.length?items.map(c=>`<div class="candidate"><div><strong>${esc(c.date)} · ${esc(c.time)}</strong><div class="muted">Matches your Castricum rules</div></div><button data-book="${esc(c.id)}">Approve & book</button></div>`).join(''):'<div class="muted" style="padding:14px 0">No matching candidates saved.</div>';
+  document.querySelectorAll('[data-book]').forEach(b=>b.addEventListener('click',()=>book(b.dataset.book,b)));
+}
+function showDiagnostic(d){$('diagnostic').textContent=d?JSON.stringify(d,null,2):'No diagnostic yet.'}
+async function load(){
+  state=await jsonFetch('/api/state');
+  $('runtime').textContent=state.runtime.bookingEnabled?'Booking submission ENABLED':'Live checking enabled · booking safety gate ON';
+  $('cadence').value=state.settings.cadence;$('mode').value=state.settings.bookingMode;$('weekdayAfter').value=state.settings.weekdayAfter;
+  for(const k of ['firstName','lastName','email','phone'])$(k).value=state.profile[k]||'';
+  renderCandidates(state.candidates);showDiagnostic(state.lastDiagnostic);
+  $('checkStatus').textContent=state.lastCheck?`Last server check: ${new Date(state.lastCheck).toLocaleString()}`:'No server check yet.';
+}
+$('saveSettings').addEventListener('click',async()=>{try{await jsonFetch('/api/settings',{method:'PUT',body:JSON.stringify({cadence:$('cadence').value,bookingMode:$('mode').value,weekdayAfter:$('weekdayAfter').value,saturdayAny:true})});$('settingsStatus').textContent='Saved.'}catch(e){$('settingsStatus').textContent=e.message}});
+$('saveProfile').addEventListener('click',async()=>{try{await jsonFetch('/api/profile',{method:'PUT',body:JSON.stringify({firstName:$('firstName').value,lastName:$('lastName').value,email:$('email').value,phone:$('phone').value})});$('profileStatus').textContent='Saved securely in the app data volume.'}catch(e){$('profileStatus').textContent=e.message}});
+$('check').addEventListener('click',async()=>{const b=$('check');b.disabled=true;$('checkStatus').textContent='Opening BrainWash/Aimy and checking live availability…';try{const r=await jsonFetch('/api/check',{method:'POST'});renderCandidates(r.candidates);showDiagnostic(r.diagnostic);$('checkStatus').textContent=r.candidates.length?`Found ${r.candidates.length} matching slot(s).`:'Live check completed, but no matching slots were found on the visible booking screen.'}catch(e){showDiagnostic(e.data?.diagnostic);$('checkStatus').textContent='Live connector needs adjustment: '+e.message}finally{b.disabled=false}});
+async function book(id,b){if(!confirm('Book this appointment using your saved contact details?'))return;b.disabled=true;b.textContent='Booking…';try{const r=await jsonFetch('/api/book/'+encodeURIComponent(id),{method:'POST'});alert(r.booking?`Booked ${r.booking.date} at ${r.booking.time}`:r.message||'Done');await load()}catch(e){alert(e.data?.message||e.message);if(e.data?.diagnostic)showDiagnostic(e.data.diagnostic)}finally{b.disabled=false;b.textContent='Approve & book'}}
+load().catch(e=>{$('checkStatus').textContent='Could not load app: '+e.message});
+</script>
+</body>
+</html>
