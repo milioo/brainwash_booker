@@ -328,9 +328,16 @@ async function bookCandidate(candidateId) {
     }
     await targetTime.click();
 
-    const selectedTime = normalizeText(await row
+    // Aimy applies its selected class asynchronously after the click. Waiting for
+    // the exact requested slot avoids treating that short UI update as a failed
+    // selection while still refusing to continue if a different time is chosen.
+    const selectedTarget = row
       .locator('.time-slots__slot-container__slots--slot.selected-time-slot')
-      .innerText().catch(() => ''));
+      .filter({ hasText: new RegExp(`^\\s*${escapedTime}\\s*$`) })
+      .first();
+    await selectedTarget.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+
+    const selectedTime = normalizeText(await selectedTarget.innerText().catch(() => ''));
     if (selectedTime !== candidate.time) {
       throw new Error('Aimy did not select the requested time. No booking was made.');
     }
