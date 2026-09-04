@@ -23,13 +23,15 @@ Real final submission is controlled by the environment variable:
 BOOKING_ENABLED=false
 ```
 
-Keep it `false` for the first live availability test. When a candidate is approved, the connector will re-open the flow and try to reach/fill the final form, but will stop before submission. After you have verified the diagnostic and the correct treatment/date/time, set:
+Keep it `false` for the first live availability test. After you have verified the correct treatment/date/time, configure dashboard authentication and enable manual booking:
 
 ```text
+APP_USERNAME=brainwash
+APP_PASSWORD=<long random password>
 BOOKING_ENABLED=true
 ```
 
-Then redeploy/restart. Approval mode still requires a click in the dashboard. Auto mode can also be selected after this gate is enabled.
+Then redeploy/restart. The dashboard and saved contact details are protected by HTTP Basic authentication. Every real appointment requires clicking **Approve & book** and confirming the exact date and time. Automatic booking is deliberately unavailable.
 
 ## Run locally
 
@@ -61,6 +63,8 @@ Use the included Dockerfile. Configure:
 - `TZ=Europe/Amsterdam`
 - `DATA_DIR=/app/data`
 - `HEADLESS=true`
+- `APP_USERNAME=brainwash`
+- `APP_PASSWORD=<long random password>`
 - `BOOKING_ENABLED=false` initially
 
 Attach a persistent volume mounted at `/app/data`; otherwise profile/settings/history can disappear on redeploy.
@@ -82,8 +86,8 @@ The server contains two schedulers, both using `Europe/Amsterdam`:
 - monthly: 09:00 on the first day of every month;
 - every 4 weeks: a daily 09:05 trigger that only runs when at least 28 days have elapsed since the last check.
 
-In approval mode, a scheduled run saves matching candidates for you to approve later. In auto mode, the earliest matching candidate is submitted only when `BOOKING_ENABLED=true` and the saved contact profile is complete.
+Scheduled runs only save matching candidates. They never submit an appointment. A real appointment requires an authenticated user to click **Approve & book**, confirm the exact date and time, and have a complete contact profile saved.
 
 ## Important operational note
 
-Browser automation against a third-party booking website is inherently less stable than an API integration. If Aimy changes the booking flow, the dashboard will preserve diagnostics instead of guessing. Re-test after any UI change before enabling automatic booking again.
+Browser automation against a third-party booking website is inherently less stable than an API integration. If Aimy changes the booking flow, the dashboard will preserve diagnostics instead of guessing. Re-test the complete manual flow after any UI change.

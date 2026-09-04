@@ -13,6 +13,8 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const HEADLESS = String(process.env.HEADLESS ?? 'true').toLowerCase() !== 'false';
 const BOOKING_ENABLED = String(process.env.BOOKING_ENABLED ?? 'false').toLowerCase() === 'true';
+const APP_USERNAME = String(process.env.APP_USERNAME || 'brainwash');
+const APP_PASSWORD = String(process.env.APP_PASSWORD || '');
 const TIMEZONE = process.env.TZ || 'Europe/Amsterdam';
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -39,12 +41,15 @@ const DEFAULT_STATE = {
 function readState() {
   try {
     const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    return {
+    const state = {
       ...structuredClone(DEFAULT_STATE),
       ...parsed,
       settings: { ...DEFAULT_STATE.settings, ...(parsed.settings || {}) },
       profile: { ...DEFAULT_STATE.profile, ...(parsed.profile || {}) }
     };
+    // Real bookings always require an explicit click in the dashboard.
+    state.settings.bookingMode = 'approval';
+    return state;
   } catch {
     writeState(DEFAULT_STATE);
     return structuredClone(DEFAULT_STATE);
@@ -182,6 +187,27 @@ async function enterBookingFlow(page, settings) {
     .waitFor({ state: 'visible', timeout: 15000 });
 }
 
+async function expandSlotRow(page, rawDate) {
+  const row = page.locator(`.time-slots__slot-container[title="${rawDate}"]`).first();
+  await row.waitFor({ state: 'visible', timeout: 15000 });
+
+  const overflow = row.locator('.time-slots__slot-container__slots--overflow-slot');
+  if (await overflow.isVisible().catch(() => false)) {
+    await overflow.click();
+    await page.waitForTimeout(250);
+  }
+
+  const showMore = row
+    .locator('.time-slots__slot-container__slots--show-more')
+    .filter({ hasText: /^Toon meer$/i });
+  if (await showMore.isVisible().catch(() => false)) {
+    await showMore.click();
+    await page.waitForTimeout(250);
+  }
+
+  return row;
+}
+
 async function extractVisibleSlots(page, settings) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -201,20 +227,7 @@ async function extractVisibleSlots(page, settings) {
 
     // Aimy initially shows only two times. Expand +N and then "Toon meer"
     // so late weekday appointments are included.
-    const row = page.locator(`.time-slots__slot-container[title="${rawDate}"]`).first();
-    const overflow = row.locator('.time-slots__slot-container__slots--overflow-slot');
-    if (await overflow.isVisible().catch(() => false)) {
-      await overflow.click();
-      await page.waitForTimeout(250);
-    }
-
-    const showMore = row
-      .locator('.time-slots__slot-container__slots--show-more')
-      .filter({ hasText: /^Toon meer$/i });
-    if (await showMore.isVisible().catch(() => false)) {
-      await showMore.click();
-      await page.waitForTimeout(250);
-    }
+    const row = await expandSlotRow(page, rawDate);
 
     const times = await row
       .locator('.time-slots__slot-container__slots--slot')
@@ -300,67 +313,66 @@ async function bookCandidate(candidateId) {
   const page = await browser.newPage({ locale: 'nl-NL', timezoneId: TIMEZONE });
   try {
     await enterBookingFlow(page, state.settings);
-    await page.waitForTimeout(1200);
 
-    const targetTime = page.getByRole('button', { name: new RegExp(candidate.time.replace(':', '\\s*:\\s*'), 'i') });
-    let clicked = false;
-    const count = await targetTime.count().catch(() => 0);
-    for (let i = 0; i < count; i++) {
-      const el = targetTime.nth(i);
-      if (!(await el.isVisible().catch(() => false))) continue;
-      const context = await el.evaluate(node => {
-        let s = node.innerText || '';
-        let p = node.parentElement;
-        for (let i = 0; i < 4 && p; i++, p = p.parentElement) s += ' ' + (p.innerText || '');
-        return s;
-      });
-      const parsed = parseDateFromText(context);
-      const parsedIso = parsed ? `${parsed.getFullYear()}-${String(parsed.getMonth()+1).padStart(2,'0')}-${String(parsed.getDate()).padStart(2,'0')}` : '';
-      if (parsedIso === candidate.date) {
-        await el.click();
-        clicked = true;
-        break;
-      }
+    const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(candidate.date);
+    if (!dateMatch) throw new Error('Candidate date is invalid. Run a fresh availability check.');
+    const rawDate = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
+    const row = await expandSlotRow(page, rawDate);
+    const escapedTime = candidate.time.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const targetTime = row
+      .locator('.time-slots__slot-container__slots--slot')
+      .filter({ hasText: new RegExp(`^\\s*${escapedTime}\\s*$`) })
+      .first();
+    if (!(await targetTime.isVisible().catch(() => false))) {
+      throw new Error('The chosen slot is no longer available. Run a fresh check.');
     }
-    if (!clicked) throw new Error('The chosen slot is no longer visible. Run a fresh check.');
-    await page.waitForTimeout(800);
+    await targetTime.click();
 
-    await fillByLabelOrPlaceholder(page, [/voornaam/i, /first name/i], state.profile.firstName);
-    await fillByLabelOrPlaceholder(page, [/achternaam/i, /last name/i], state.profile.lastName);
-    await fillByLabelOrPlaceholder(page, [/e-?mail/i], state.profile.email);
-    await fillByLabelOrPlaceholder(page, [/telefoon/i, /phone/i, /mobiel/i], state.profile.phone);
-
-    // Only tick required legal/booking consent, never optional marketing consent.
-    const requiredConsent = page.locator('label').filter({ hasText: /voorwaarden|privacy|akkoord/i });
-    const consentCount = await requiredConsent.count().catch(() => 0);
-    for (let i = 0; i < consentCount; i++) {
-      const label = requiredConsent.nth(i);
-      const text = normalizeText(await label.innerText().catch(() => '')).toLowerCase();
-      if (/nieuwsbrief|marketing|aanbiedingen/.test(text)) continue;
-      const checkbox = label.locator('input[type="checkbox"]');
-      if (await checkbox.count().catch(() => 0)) {
-        if (!(await checkbox.isChecked().catch(() => false))) await checkbox.check().catch(() => {});
-      }
+    const selectedTime = normalizeText(await row
+      .locator('.time-slots__slot-container__slots--slot.selected-time-slot')
+      .innerText().catch(() => ''));
+    if (selectedTime !== candidate.time) {
+      throw new Error('Aimy did not select the requested time. No booking was made.');
     }
+
+    await page.getByRole('button', { name: /Volgende stap/i }).click();
+    await page.waitForURL(/\/booking\/checkout/, { timeout: 15000 });
 
     const diagnostic = await getDiagnostic(page);
     if (!BOOKING_ENABLED) {
       return {
         ok: false,
         safetyBlocked: true,
-        message: 'Booking reached the final form, but BOOKING_ENABLED=false. Review the live diagnostic before enabling submission.',
+        message: 'The requested slot reached checkout, but booking submission is disabled.',
         diagnostic
       };
     }
 
-    const submitPatterns = [/bevestig.*afspraak/i, /afspraak.*maken/i, /boeken/i, /reserveer/i, /confirm/i];
-    const submitted = await clickFirstMatching(page, submitPatterns, 'final booking button');
-    if (!submitted) throw new Error('Final booking button not found; no booking was submitted.');
-    await page.waitForTimeout(1500);
+    const fullName = `${state.profile.firstName} ${state.profile.lastName}`.trim();
+    const nameFilled = await fillByLabelOrPlaceholder(page, [/voor- en achternaam/i], fullName);
+    const emailFilled = await fillByLabelOrPlaceholder(page, [/e-?mail/i], state.profile.email);
+    const phoneFilled = await fillByLabelOrPlaceholder(page, [/telefoon/i, /phone/i, /mobiel/i], state.profile.phone);
+    if (!nameFilled || !emailFilled || !phoneFilled) {
+      throw new Error('Aimy contact fields changed. No booking was submitted.');
+    }
+
+    // Aimy currently preselects its newsletter. Never subscribe automatically.
+    const newsletter = page.getByRole('checkbox', { name: /nieuwsbrief/i }).first();
+    if (await newsletter.isVisible().catch(() => false)) {
+      if (await newsletter.isChecked().catch(() => false)) await newsletter.uncheck();
+    }
+
+    await page.getByRole('button', { name: /^Volgende stap$/i }).click();
+    const finalButton = page.getByRole('button', { name: /^Bevestig en boek afspraak$/i });
+    await finalButton.waitFor({ state: 'visible', timeout: 15000 });
+
+    // This is the only action that creates an appointment.
+    await finalButton.click();
+    await page.waitForURL(/\/booking\/confirmation/, { timeout: 20000 });
 
     const confirmationText = normalizeText(await page.locator('body').innerText().catch(() => ''));
-    if (!/bevestigd|gelukt|afspraak.*gemaakt|confirmation|confirmed/i.test(confirmationText)) {
-      throw new Error('Submission was attempted but confirmation could not be verified. Check Aimy manually before retrying.');
+    if (!/afspraak bevestigd/i.test(confirmationText)) {
+      throw new Error('Aimy did not show a booking confirmation. Check manually before retrying.');
     }
 
     const booking = { ...candidate, bookedAt: new Date().toISOString(), status: 'confirmed' };
@@ -375,15 +387,48 @@ async function bookCandidate(candidateId) {
 
 const app = express();
 app.use(express.json({ limit: '100kb' }));
+
+function safeEqual(left, right) {
+  const a = Buffer.from(String(left));
+  const b = Buffer.from(String(right));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Protect the dashboard and stored contact details when APP_PASSWORD is set.
+app.use((req, res, next) => {
+  if (req.path === '/api/health' || !APP_PASSWORD) return next();
+  const [scheme, encoded] = String(req.headers.authorization || '').split(' ');
+  let username = '';
+  let password = '';
+  if (/^Basic$/i.test(scheme) && encoded) {
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    const separator = decoded.indexOf(':');
+    if (separator >= 0) {
+      username = decoded.slice(0, separator);
+      password = decoded.slice(separator + 1);
+    }
+  }
+  if (safeEqual(username, APP_USERNAME) && safeEqual(password, APP_PASSWORD)) return next();
+  res.set('WWW-Authenticate', 'Basic realm="BrainWash Booker", charset="UTF-8"');
+  res.status(401).send('Authentication required.');
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, bookingEnabled: BOOKING_ENABLED, timezone: TIMEZONE }));
-app.get('/api/state', (_req, res) => res.json({ ...readState(), runtime: { bookingEnabled: BOOKING_ENABLED, timezone: TIMEZONE } }));
+app.get('/api/state', (_req, res) => res.json({
+  ...readState(),
+  runtime: {
+    bookingEnabled: BOOKING_ENABLED,
+    bookingReady: BOOKING_ENABLED && Boolean(APP_PASSWORD),
+    timezone: TIMEZONE
+  }
+}));
 
 app.put('/api/settings', (req, res) => {
   const state = readState();
   const allowedCadence = ['monthly', 'fourWeeks'];
-  const allowedMode = ['approval', 'auto'];
+  const allowedMode = ['approval'];
   const next = req.body || {};
   state.settings.cadence = allowedCadence.includes(next.cadence) ? next.cadence : state.settings.cadence;
   state.settings.bookingMode = allowedMode.includes(next.bookingMode) ? next.bookingMode : state.settings.bookingMode;
@@ -414,6 +459,12 @@ app.post('/api/check', async (_req, res) => {
 });
 
 app.post('/api/book/:id', async (req, res) => {
+  if (!BOOKING_ENABLED) {
+    return res.status(409).json({ ok: false, error: 'Booking submission is disabled.' });
+  }
+  if (!APP_PASSWORD) {
+    return res.status(503).json({ ok: false, error: 'Set APP_PASSWORD before enabling booking.' });
+  }
   try {
     const result = await bookCandidate(req.params.id);
     res.status(result.ok ? 200 : result.safetyBlocked ? 409 : 500).json(result);
@@ -432,10 +483,7 @@ app.listen(PORT, () => console.log(`BrainWash Booker listening on :${PORT}`));
 cron.schedule('0 9 1 * *', async () => {
   const state = readState();
   if (state.settings.cadence !== 'monthly') return;
-  const result = await availabilityCheck();
-  if (result.ok && state.settings.bookingMode === 'auto' && result.candidates[0] && BOOKING_ENABLED) {
-    await bookCandidate(result.candidates[0].id).catch(err => console.error('Auto-book failed:', err));
-  }
+  await availabilityCheck();
 }, { timezone: TIMEZONE });
 
 // Every-4-weeks mode: daily trigger, but only run once 28 days have elapsed since the last check.
@@ -444,8 +492,5 @@ cron.schedule('5 9 * * *', async () => {
   if (state.settings.cadence !== 'fourWeeks') return;
   const last = state.lastCheck ? new Date(state.lastCheck) : null;
   if (last && Date.now() - last.getTime() < 28 * 86400000) return;
-  const result = await availabilityCheck();
-  if (result.ok && state.settings.bookingMode === 'auto' && result.candidates[0] && BOOKING_ENABLED) {
-    await bookCandidate(result.candidates[0].id).catch(err => console.error('Auto-book failed:', err));
-  }
+  await availabilityCheck();
 }, { timezone: TIMEZONE });
