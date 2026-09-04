@@ -391,7 +391,9 @@ app.post('/api/book/:id', async (req, res) => {
   }
 });
 
-app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/{*splat}', (_req, res) =>
+  res.sendFile(path.join(__dirname, 'public', 'index.html'))
+);
 
 app.listen(PORT, () => console.log(`BrainWash Booker listening on :${PORT}`));
 
