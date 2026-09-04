@@ -16,6 +16,9 @@ const BOOKING_ENABLED = String(process.env.BOOKING_ENABLED ?? 'false').toLowerCa
 const APP_USERNAME = String(process.env.APP_USERNAME || 'brainwash');
 const APP_PASSWORD = String(process.env.APP_PASSWORD || '');
 const TIMEZONE = process.env.TZ || 'Europe/Amsterdam';
+const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font']);
+
+let browserJobRunning = false;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -113,6 +116,45 @@ function isPreferredSlot(date, time, settings) {
     return mins != null && mins >= timeToMinutes(settings.weekdayAfter || '17:00');
   }
   return false;
+}
+
+async function openBookingPage() {
+  const browser = await chromium.launch({
+    headless: HEADLESS,
+    args: [
+      '--single-process',
+      '--no-zygote',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-dev-shm-usage',
+      '--disable-site-isolation-trials',
+      '--renderer-process-limit=1',
+      '--js-flags=--max-old-space-size=128'
+    ]
+  });
+  const context = await browser.newContext({
+    locale: 'nl-NL',
+    timezoneId: TIMEZONE,
+    viewport: { width: 900, height: 700 }
+  });
+  await context.route('**/*', route => {
+    if (BLOCKED_RESOURCE_TYPES.has(route.request().resourceType())) return route.abort();
+    return route.continue();
+  });
+  const page = await context.newPage();
+  return { browser, page };
+}
+
+async function runBrowserJob(task) {
+  if (browserJobRunning) {
+    throw Object.assign(new Error('Another live browser check is still running. Try again in a moment.'), { code: 'BROWSER_BUSY' });
+  }
+  browserJobRunning = true;
+  try {
+    return await task();
+  } finally {
+    browserJobRunning = false;
+  }
 }
 
 async function dismissCookieBanner(page) {
@@ -257,8 +299,7 @@ async function availabilityCheck() {
   let browser;
   let page;
   try {
-    browser = await chromium.launch({ headless: HEADLESS });
-    page = await browser.newPage({ locale: 'nl-NL', timezoneId: TIMEZONE });
+    ({ browser, page } = await openBookingPage());
     await enterBookingFlow(page, state.settings);
     const candidates = await extractVisibleSlots(page, state.settings);
     const diagnostic = await getDiagnostic(page);
@@ -309,8 +350,7 @@ async function bookCandidate(candidateId, { submit = false } = {}) {
   const missing = Object.entries(state.profile).filter(([, v]) => !String(v || '').trim()).map(([k]) => k);
   if (submit && missing.length) throw new Error(`Complete your profile first: ${missing.join(', ')}`);
 
-  const browser = await chromium.launch({ headless: HEADLESS });
-  const page = await browser.newPage({ locale: 'nl-NL', timezoneId: TIMEZONE });
+  const { browser, page } = await openBookingPage();
   try {
     await enterBookingFlow(page, state.settings);
 
@@ -465,7 +505,11 @@ app.put('/api/profile', (req, res) => {
 });
 
 app.post('/api/check', async (_req, res) => {
-  const result = await availabilityCheck();
+  const result = await runBrowserJob(availabilityCheck).catch(error => ({
+    ok: false,
+    candidates: [],
+    diagnostic: { ok: false, code: error.code || 'UNKNOWN', error: error.message }
+  }));
   if (!result.ok) {
     return res.status(502).json({
       ...result,
@@ -478,7 +522,7 @@ app.post('/api/check', async (_req, res) => {
 // Uses the production selection flow but always stops before entering contact data.
 app.post('/api/preview/:id', async (req, res) => {
   try {
-    res.json(await bookCandidate(req.params.id, { submit: false }));
+    res.json(await runBrowserJob(() => bookCandidate(req.params.id, { submit: false })));
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message, diagnostic: error.diagnostic });
   }
@@ -492,7 +536,7 @@ app.post('/api/book/:id', async (req, res) => {
     return res.status(503).json({ ok: false, error: 'Set APP_PASSWORD before enabling booking.' });
   }
   try {
-    const result = await bookCandidate(req.params.id, { submit: true });
+    const result = await runBrowserJob(() => bookCandidate(req.params.id, { submit: true }));
     res.status(result.ok ? 200 : result.safetyBlocked ? 409 : 500).json(result);
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message, diagnostic: error.diagnostic });
