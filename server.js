@@ -302,12 +302,12 @@ async function fillByLabelOrPlaceholder(page, patterns, value) {
   return false;
 }
 
-async function bookCandidate(candidateId) {
+async function bookCandidate(candidateId, { submit = false } = {}) {
   const state = readState();
   const candidate = state.candidates.find(c => c.id === candidateId);
   if (!candidate) throw new Error('Candidate not found. Run a fresh availability check.');
   const missing = Object.entries(state.profile).filter(([, v]) => !String(v || '').trim()).map(([k]) => k);
-  if (missing.length) throw new Error(`Complete your profile first: ${missing.join(', ')}`);
+  if (submit && missing.length) throw new Error(`Complete your profile first: ${missing.join(', ')}`);
 
   const browser = await chromium.launch({ headless: HEADLESS });
   const page = await browser.newPage({ locale: 'nl-NL', timezoneId: TIMEZONE });
@@ -339,18 +339,27 @@ async function bookCandidate(candidateId) {
 
     const selectedTime = normalizeText(await selectedTarget.innerText().catch(() => ''));
     if (selectedTime !== candidate.time) {
-      throw new Error('Aimy did not select the requested time. No booking was made.');
+      const selection = await page.locator('.time-slots__slot-container[title]').evaluateAll(rows =>
+        rows.filter(row => row.querySelector('.selected-time-slot')).map(row => ({
+          date: row.getAttribute('title'),
+          slots: [...row.querySelectorAll('.selected-time-slot')].map(slot => ({ text: slot.textContent, rendered: slot.innerText, classes: slot.className }))
+        }))
+      );
+      throw Object.assign(new Error('Aimy did not select the requested time. No booking was made.'), {
+        diagnostic: { stage: 'select-time', expected: { date: candidate.date, time: candidate.time }, selectedTime, selection }
+      });
     }
 
     await page.getByRole('button', { name: /Volgende stap/i }).click();
     await page.waitForURL(/\/booking\/checkout/, { timeout: 15000 });
 
     const diagnostic = await getDiagnostic(page);
-    if (!BOOKING_ENABLED) {
+    if (!submit || !BOOKING_ENABLED) {
       return {
-        ok: false,
-        safetyBlocked: true,
-        message: 'The requested slot reached checkout, but booking submission is disabled.',
+        ok: !submit,
+        preview: !submit,
+        safetyBlocked: submit,
+        message: 'The requested slot reached checkout. No contact details or booking were submitted.',
         diagnostic
       };
     }
@@ -422,7 +431,7 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, bookingEnabled: BOOKING_ENABLED, timezone: TIMEZONE }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, bookingEnabled: BOOKING_ENABLED, timezone: TIMEZONE, revision: process.env.RENDER_GIT_COMMIT || 'local' }));
 app.get('/api/state', (_req, res) => res.json({
   ...readState(),
   runtime: {
@@ -465,6 +474,15 @@ app.post('/api/check', async (_req, res) => {
   res.json(result);
 });
 
+// Uses the production selection flow but always stops before entering contact data.
+app.post('/api/preview/:id', async (req, res) => {
+  try {
+    res.json(await bookCandidate(req.params.id, { submit: false }));
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message, diagnostic: error.diagnostic });
+  }
+});
+
 app.post('/api/book/:id', async (req, res) => {
   if (!BOOKING_ENABLED) {
     return res.status(409).json({ ok: false, error: 'Booking submission is disabled.' });
@@ -473,10 +491,10 @@ app.post('/api/book/:id', async (req, res) => {
     return res.status(503).json({ ok: false, error: 'Set APP_PASSWORD before enabling booking.' });
   }
   try {
-    const result = await bookCandidate(req.params.id);
+    const result = await bookCandidate(req.params.id, { submit: true });
     res.status(result.ok ? 200 : result.safetyBlocked ? 409 : 500).json(result);
   } catch (error) {
-    res.status(400).json({ ok: false, error: error.message });
+    res.status(400).json({ ok: false, error: error.message, diagnostic: error.diagnostic });
   }
 });
 
