@@ -328,17 +328,18 @@ async function bookCandidate(candidateId, { submit = false } = {}) {
     }
     await targetTime.click();
 
-    // Aimy applies its selected class asynchronously after the click. Waiting for
-    // the exact requested slot avoids treating that short UI update as a failed
-    // selection while still refusing to continue if a different time is chosen.
-    const selectedTarget = row
-      .locator('.time-slots__slot-container__slots--slot.selected-time-slot')
-      .filter({ hasText: new RegExp(`^\\s*${escapedTime}\\s*$`) })
-      .first();
-    await selectedTarget.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    // Aimy updates the clicked element's class asynchronously. Poll that exact
+    // element so a delayed Angular render cannot look like a failed selection.
+    let selectedClass = '';
+    let selectedTime = '';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      selectedClass = await targetTime.getAttribute('class').catch(() => '');
+      selectedTime = normalizeText(await targetTime.innerText().catch(() => ''));
+      if (selectedClass.includes('selected-time-slot')) break;
+      await page.waitForTimeout(250);
+    }
 
-    const selectedTime = normalizeText(await selectedTarget.innerText().catch(() => ''));
-    if (selectedTime !== candidate.time) {
+    if (!selectedClass.includes('selected-time-slot') || selectedTime !== candidate.time) {
       const selection = await page.locator('.time-slots__slot-container[title]').evaluateAll(rows =>
         rows.filter(row => row.querySelector('.selected-time-slot')).map(row => ({
           date: row.getAttribute('title'),
@@ -346,7 +347,7 @@ async function bookCandidate(candidateId, { submit = false } = {}) {
         }))
       );
       throw Object.assign(new Error('Aimy did not select the requested time. No booking was made.'), {
-        diagnostic: { stage: 'select-time', expected: { date: candidate.date, time: candidate.time }, selectedTime, selection }
+        diagnostic: { stage: 'select-time', expected: { date: candidate.date, time: candidate.time }, selectedTime, selectedClass, selection }
       });
     }
 
