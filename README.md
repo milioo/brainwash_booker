@@ -3,7 +3,7 @@
 Deployable Node/Playwright dashboard for the booking preferences configured in this chat:
 
 - Salon: **BrainWash Castricum**
-- Treatment: **Mannen – wassen en knippen** (connector also falls back to matching “wassen + knippen”)
+- Treatment: **Wassen, knippen, drogen Heer** (the current Aimy label for the requested men's wash-and-cut service)
 - Stylist: **no preference**
 - Preferred times: **Tuesday–Friday from 17:00**, **any time Saturday**
 - Default cadence: **monthly**
@@ -11,7 +11,7 @@ Deployable Node/Playwright dashboard for the booking preferences configured in t
 
 ## What is live
 
-`Check live availability` launches Chromium on the server, opens the official BrainWash Castricum booking route, follows the Aimy flow, attempts to choose the configured treatment and no-preference stylist, and extracts matching appointment times.
+`Check live availability` launches Chromium on the server, opens the official BrainWash Castricum booking route, selects **Heren**, confirms the category, chooses **Wassen, knippen, drogen Heer**, continues by date with **Geen voorkeur**, expands each relevant day's complete time list, and extracts matching appointment times.
 
 The app keeps a connector diagnostic (current URL, visible controls and a text excerpt). This is intentional: Aimy does not expose a documented public customer-booking API, so the DOM automation can require a selector adjustment after their UI changes.
 

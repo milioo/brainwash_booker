@@ -56,7 +56,19 @@
 const $=id=>document.getElementById(id);
 let state=null;
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-async function jsonFetch(url,opts={}){const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opts});const data=await r.json();if(!r.ok)throw Object.assign(new Error(data.error||data.message||'Request failed'),{data});return data}
+async function jsonFetch(url,opts={}){
+  const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opts});
+  const text=await r.text();
+  let data={};
+  try{data=text?JSON.parse(text):{}}catch{
+    throw Object.assign(new Error(r.ok?'Server returned an invalid response.':`Request failed (HTTP ${r.status})`),{status:r.status});
+  }
+  if(!r.ok){
+    const message=data.error||data.message||data.diagnostic?.error||`Request failed (HTTP ${r.status})`;
+    throw Object.assign(new Error(message),{data,status:r.status});
+  }
+  return data;
+}
 function renderCandidates(items=[]){
   $('candidates').innerHTML=items.length?items.map(c=>`<div class="candidate"><div><strong>${esc(c.date)} · ${esc(c.time)}</strong><div class="muted">Matches your Castricum rules</div></div><button data-book="${esc(c.id)}">Approve & book</button></div>`).join(''):'<div class="muted" style="padding:14px 0">No matching candidates saved.</div>';
   document.querySelectorAll('[data-book]').forEach(b=>b.addEventListener('click',()=>book(b.dataset.book,b)));

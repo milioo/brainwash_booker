@@ -21,7 +21,7 @@ const DEFAULT_STATE = {
   settings: {
     salon: 'BrainWash Castricum',
     bookingUrl: 'https://www.brainwash-kappers.nl/afspraak-maken/brainwash-castricum',
-    treatment: 'Mannen - wassen en knippen',
+    treatment: 'Wassen, knippen, drogen Heer',
     stylist: 'No preference',
     weekdayAfter: '17:00',
     saturdayAny: true,
@@ -131,9 +131,13 @@ async function clickFirstMatching(page, patterns, label) {
     ];
     for (const item of candidates) {
       if (await item.isVisible().catch(() => false)) {
-        await item.click().catch(() => {});
-        await page.waitForTimeout(700);
-        return true;
+        try {
+          await item.click({ timeout: 5000 });
+          await page.waitForTimeout(700);
+          return true;
+        } catch {
+          // Try the next locator. A visible text node is not always clickable.
+        }
       }
     }
   }
@@ -156,57 +160,70 @@ async function getDiagnostic(page) {
 
 async function enterBookingFlow(page, settings) {
   await page.goto(settings.bookingUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-  await page.waitForTimeout(1500);
+  await page.waitForURL(/\/booking\/treatment-selection/, { timeout: 45000 });
   await dismissCookieBanner(page);
 
-  // Some BrainWash routes preselect the salon; this is a harmless fallback if Aimy asks again.
-  await clickFirstMatching(page, [/brainwash\s+castricum/i, /castricum/i], 'Castricum salon').catch(() => false);
+  // Aimy first asks for a customer category before it displays treatments.
+  const category = page.getByText('Heren', { exact: true }).first();
+  await category.waitFor({ state: 'visible', timeout: 15000 });
+  await category.click();
+  await page.getByRole('button', { name: /^Bevestig$/i }).click();
 
-  const treatmentClicked = await clickFirstMatching(
-    page,
-    [/mannen.*wassen.*knippen/i, /wassen.*knippen.*mannen/i, /wassen.*knippen/i],
-    'treatment'
-  );
-  if (!treatmentClicked) {
-    const err = new Error('Treatment could not be selected automatically.');
-    err.code = 'SELECTOR_TREATMENT';
-    throw err;
-  }
+  const treatment = page.getByText(/Wassen,\s*knippen,\s*drogen\s+Heer/i).first();
+  await treatment.waitFor({ state: 'visible', timeout: 15000 });
+  await treatment.click();
+  await page.getByRole('button', { name: /Volgende stap/i }).click();
 
-  // Aimy may skip this screen if there is only one available employee option.
-  await clickFirstMatching(
-    page,
-    [/geen voorkeur/i, /maakt niet uit/i, /iedereen/i, /no preference/i, /anyone/i],
-    'stylist preference'
-  ).catch(() => false);
+  // Choosing a date makes Aimy use "Geen voorkeur" for the employee.
+  await page.waitForURL(/\/booking\/date-or-stylist/, { timeout: 15000 });
+  await page.getByRole('button', { name: /^Datum$/i }).click();
+  await page.waitForURL(/\/booking\/date-time-selection/, { timeout: 15000 });
+  await page.locator('.time-slots__slot-container[title]').first()
+    .waitFor({ state: 'visible', timeout: 15000 });
 }
 
 async function extractVisibleSlots(page, settings) {
-  const raw = await page.locator('button:visible, [role="button"]:visible, a:visible, label:visible').evaluateAll(nodes => {
-    const out = [];
-    for (const node of nodes) {
-      const own = [node.innerText, node.getAttribute('aria-label'), node.getAttribute('title')].filter(Boolean).join(' ');
-      if (!/\b\d{1,2}:\d{2}\b/.test(own)) continue;
-      let context = own;
-      let p = node.parentElement;
-      for (let i = 0; i < 4 && p; i++, p = p.parentElement) {
-        const t = p.innerText || '';
-        if (t.length < 1200) context += ' ' + t;
-      }
-      out.push({ own, context });
-    }
-    return out.slice(0, 250);
-  });
-
   const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const horizon = new Date(now.getTime() + Number(settings.horizonDays || 45) * 86400000);
   const dedupe = new Map();
-  for (const item of raw) {
-    const times = normalizeText(item.own).match(/\b\d{1,2}:\d{2}\b/g) || [];
-    const date = parseDateFromText(item.context, now);
-    if (!date || date > horizon) continue;
+
+  const rowDates = await page.locator('.time-slots__slot-container[title]').evaluateAll(nodes =>
+    [...new Set(nodes.map(node => node.getAttribute('title')).filter(Boolean))]
+  );
+
+  for (const rawDate of rowDates) {
+    const date = parseDateFromText(rawDate, now);
+    if (!date || date < today || date > horizon) continue;
+
+    const day = date.getDay();
+    if (day !== 6 && !(day >= 2 && day <= 5)) continue;
+
+    // Aimy initially shows only two times. Expand +N and then "Toon meer"
+    // so late weekday appointments are included.
+    const row = page.locator(`.time-slots__slot-container[title="${rawDate}"]`).first();
+    const overflow = row.locator('.time-slots__slot-container__slots--overflow-slot');
+    if (await overflow.isVisible().catch(() => false)) {
+      await overflow.click();
+      await page.waitForTimeout(250);
+    }
+
+    const showMore = row
+      .locator('.time-slots__slot-container__slots--show-more')
+      .filter({ hasText: /^Toon meer$/i });
+    if (await showMore.isVisible().catch(() => false)) {
+      await showMore.click();
+      await page.waitForTimeout(250);
+    }
+
+    const times = await row
+      .locator('.time-slots__slot-container__slots--slot')
+      .allTextContents();
+
     for (const time of times) {
-      const hhmm = time.padStart(5, '0');
+      const match = normalizeText(time).match(/^\d{1,2}:\d{2}$/);
+      if (!match) continue;
+      const hhmm = match[0].padStart(5, '0');
       if (!isPreferredSlot(date, hhmm, settings)) continue;
       const isoDate = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
       const key = `${isoDate}T${hhmm}`;
@@ -215,7 +232,7 @@ async function extractVisibleSlots(page, settings) {
         date: isoDate,
         time: hhmm,
         display: `${isoDate} ${hhmm}`,
-        sourceText: normalizeText(item.context).slice(0, 350)
+        sourceText: `${rawDate} ${hhmm}`
       });
     }
   }
@@ -224,26 +241,34 @@ async function extractVisibleSlots(page, settings) {
 
 async function availabilityCheck() {
   const state = readState();
-  const browser = await chromium.launch({ headless: HEADLESS });
-  const page = await browser.newPage({ locale: 'nl-NL', timezoneId: TIMEZONE });
+  let browser;
+  let page;
   try {
+    browser = await chromium.launch({ headless: HEADLESS });
+    page = await browser.newPage({ locale: 'nl-NL', timezoneId: TIMEZONE });
     await enterBookingFlow(page, state.settings);
-    await page.waitForTimeout(1200);
     const candidates = await extractVisibleSlots(page, state.settings);
     const diagnostic = await getDiagnostic(page);
     state.candidates = candidates.slice(0, 30);
     state.lastCheck = new Date().toISOString();
-    state.lastDiagnostic = { ok: candidates.length > 0, ...diagnostic };
+    state.lastDiagnostic = { ok: true, candidateCount: candidates.length, ...diagnostic };
     writeState(state);
     return { ok: true, candidates: state.candidates, diagnostic: state.lastDiagnostic };
   } catch (error) {
-    const diagnostic = await getDiagnostic(page).catch(() => ({ url: page.url() }));
+    const diagnostic = page
+      ? await getDiagnostic(page).catch(() => ({ url: page.url() }))
+      : {};
     state.lastCheck = new Date().toISOString();
     state.lastDiagnostic = { ok: false, error: error.message, code: error.code || 'UNKNOWN', ...diagnostic };
     writeState(state);
+    console.error('Availability check failed:', {
+      code: state.lastDiagnostic.code,
+      error: state.lastDiagnostic.error,
+      url: state.lastDiagnostic.url
+    });
     return { ok: false, candidates: [], diagnostic: state.lastDiagnostic };
   } finally {
-    await browser.close();
+    await browser?.close();
   }
 }
 
@@ -379,7 +404,13 @@ app.put('/api/profile', (req, res) => {
 
 app.post('/api/check', async (_req, res) => {
   const result = await availabilityCheck();
-  res.status(result.ok ? 200 : 502).json(result);
+  if (!result.ok) {
+    return res.status(502).json({
+      ...result,
+      error: result.diagnostic?.error || 'Availability check failed.'
+    });
+  }
+  res.json(result);
 });
 
 app.post('/api/book/:id', async (req, res) => {
